@@ -1,0 +1,728 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>me-PCR - multithreaded electronic PCR: find STS's in FASTA sequence</title>
+<link rev="made" href="mailto:root@b07.apple.com" />
+</head>
+
+<body style="background-color: white">
+<table border="0" width="100%" cellspacing="0" cellpadding="3">
+<tr><td class="block" style="background-color: #cccccc" valign="middle">
+<big><strong><span class="block">&nbsp;me-PCR - multithreaded electronic PCR: find STS's in FASTA sequence</span></strong></big>
+</td></tr>
+</table>
+
+<p><a name="__index__"></a></p>
+<!-- INDEX BEGIN -->
+
+<ul>
+
+	<li><a href="#name">NAME</a></li>
+	<li><a href="#synopsis">SYNOPSIS</a></li>
+	<li><a href="#description">DESCRIPTION</a></li>
+	<ul>
+
+		<li><a href="#quick_start">QUICK START</a></li>
+		<ul>
+
+			<li><a href="#tips_">Tips:</a></li>
+		</ul>
+
+		<li><a href="#details">DETAILS</a></li>
+		<li><a href="#differences_from_original_epcr_as_of_2002______no_longer_applicable_____">DIFFERENCES FROM ORIGINAL e-PCR AS OF 2002 (*** NO LONGER APPLICABLE ***)</a></li>
+	</ul>
+
+	<li><a href="#options">OPTIONS</a></li>
+	<li><a href="#return_value">RETURN VALUE</a></li>
+	<li><a href="#diagnostics">DIAGNOSTICS</a></li>
+	<li><a href="#files">FILES</a></li>
+	<ul>
+
+		<li><a href="#sts_input_file">STS INPUT FILE</a></li>
+		<li><a href="#fasta_input_file">FASTA INPUT FILE</a></li>
+	</ul>
+
+	<li><a href="#caveats">CAVEATS</a></li>
+	<li><a href="#notes">NOTES</a></li>
+	<ul>
+
+		<li><a href="#testing_methodology">TESTING METHODOLOGY</a></li>
+	</ul>
+
+	<li><a href="#see_also">SEE ALSO</a></li>
+	<li><a href="#authors">AUTHORS</a></li>
+	<li><a href="#changes">CHANGES</a></li>
+	<li><a href="#history">HISTORY</a></li>
+</ul>
+<!-- INDEX END -->
+
+<hr />
+<p>
+</p>
+<h1><a name="name">NAME</a></h1>
+<pre>
+
+me-PCR - multithreaded electronic PCR: find STS's in FASTA sequence</pre>
+<p>
+</p>
+<hr />
+<h1><a name="synopsis">SYNOPSIS</a></h1>
+<p>me-PCR [options] sts_file fasta_file &gt;output</p>
+<pre>
+  OPTIONS:
+  M=#      Margin (default 50)
+  N=#      Number of mismatches allowed (default 0)
+  W=#      Word size (default 11)
+  T=#      Number of threads (default 1)
+  X=#      Number of 3'-ward bases in which to disallow mismatches (default 0)
+  O=file   Output file name (default stdout)
+  Q=#      Quiet flag
+             0 = verbose progress messages
+             1 = no progress messages (default)
+  S=#      Max. line length for the STS file (not counting line
+             terminators) (default 1022)
+  Z=#      Default PCR size (default 240)
+  I=#      IUPAC flag
+             0 = don't honor IUPAC ambiguity symbols in STS's (default)
+             1 = honor IUPAC ambiguity symbols in STS's</pre>
+<p>
+</p>
+<hr />
+<h1><a name="description">DESCRIPTION</a></h1>
+<p>me-PCR searches large sequences for Sequence-Tagged Site (STS)
+markers, or any sequence fragment that can be defined in terms of two
+short subsequences separated by an approximate distance.  me-PCR was
+originally an enhanced version of Dr. Gregory Schuler's e-PCR program
+(see the <a href="#history">HISTORY</a> section at the bottom of this document).
+However, me-PCR has not been maintained for several years.</p>
+<p>In general, you should e-PCR instead of me-PCR!  e-PCR has improved
+greatly over the years.</p>
+<p>
+</p>
+<h2><a name="quick_start">QUICK START</a></h2>
+<p>me-PCR's performance and results are greatly affected by the M
+(margin), N (mismatches), and W (word size) parameters.  See the
+following list for tips.</p>
+<p>me-PCR can do ultra-fast matches of W adjacent bases (called the
+``hash word'') in a primer.  The price of this speed is that mismatches,
+if any are allowed by the N parameter, are <em>not</em> allowed to occur
+inside a hash word.  If the left primer is found, a slower search
+determines if the rest of the left primer is present in the right
+spot.  If the entire left primer is found, a <em>much</em> slower search
+determines if the right primer is in the range of locations determined
+by a) the stated PCR product length; b) the margin M; and c) for
+STS's with a size of 0, the default product length of 240.  (The Z
+parameter can change this default). If the stated or default product
+length is denoted <em>L</em>, then the right primer is searched for in those
+positions such that the STS length would be greater than or equal to
+<em>L</em> - M and less than or equal to <em>L</em> + M.  STS's are searched
+for in both orientations.</p>
+<p>
+</p>
+<h3><a name="tips_">Tips:</a></h3>
+<ul>
+<li></li>
+If you are allowing mismatches with a nonzero N value, you may want to
+use the new X parameter to disallow mismatches on the 3' end of the
+right primer (the left primer has 3'-ward mismatches implicitly
+disallowed by the has word).  The N parameter takes a numeric
+argument, which is the number of bases, counting from the 3' end of
+the right primer, which may not have mismatches, even if mismatches
+are allowed elsewhere in the primer.
+<p></p>
+<li></li>
+me-PCR uses a <em>lot</em> of memory; the entire FASTA file, STS file, and
+hash table are stored in memory.  See the hash table memory usage
+table under the ``W=n - Word size'' section.  Try not
+to exceed your computer's physical memory; otherwise, performance may
+be unacceptable, even to the point of inoperability, depending on your
+operating system!  If you are memory-constrained, you may need to use
+a smaller W value and/or split FASTA files.
+<p></p>
+<li></li>
+The STS file should be a tab-delimited UNIX-format file in the format
+used by the UniSTS data files, except that all fields after the PCR product
+length are optional.  See also the <a href="#files">FILES</a> section near the bottom of
+this document.
+<p></p>
+<li></li>
+As of version 1.0.5c, me-PCR can now process multiple sequences in a
+single FASTA file, which restores behavior from the original e-PCR
+program.  Note, however, that this new support is not yet integrated with
+the multi-threading feature of me-PCR.
+<p></p>
+<li></li>
+me-PCR is faster than e-PCR only for sequences greater than 3 MB in size.
+<p></p>
+<li></li>
+Don't forget to redirect your output to a file 
+(or use O=filename).
+<p></p>
+<li></li>
+The default wordsize (W) of 11 uses an extra 16 MB of memory.  10 uses
+4 MB, 9 uses 1, and so forth.  W=11 is many times faster than W=8.  On
+machines we've tested, W=11 is optimal -- if you have the memory to
+spare. Higher values of W will not improve performance significantly
+and may in fact bring your machine to a <em>grinding halt</em> if you greatly
+exceed your computer's physical memory.  Also, higher values of W will
+make more markers unsearchable, since each primer needs to have at
+least W adjacent A/C/G/T symbols in order to be searchable.  The other
+disadvantage of high W values is that, because no ambiguity is
+permitted in the hash word, setting the allowable mismatches (N)
+parameter greater than the default of 0 will <em>not</em> have any effect on
+the bases in the hash word.  E.g., if W=11 and the primer is 11 bases
+long, even if N allows mismatches, no mismatches will be allowed in
+the first primer!  If you have CPU to burn, smaller W values are
+better.
+<p></p>
+<li></li>
+If you want IUPAC ambiguity symbol such as 'N', 'W', etc, to be
+interpreted properly <em>in the primers</em>, make sure to use the I=1
+option.  Otherwise, an STS containing ambiguities will never match
+unless the N option is set to a positive value.  'N' symbols in the
+FASTA file will never match anything unless the N option is positive.
+<p></p>
+<li></li>
+If you are really serious about milking everything out of your STS's,
+the do successive runs of me-PCR, the first with N=0.  Take only those
+markers for which there were no hits, and run me-PCR again, this time
+with N=1.  This can be easily automated with a Perl script front-end;
+this will be added to the me-PCR package soon.  You will probably want
+to clean up with BLAST.
+<p></p>
+<li></li>
+If you have multiple CPU's, set T=n, where <em>n</em> is the number of
+CPU's at your disposal (be polite, though).  Actually, you often get a
+small performance boost by setting n to be 1 or 2 threads <em>more</em> than
+the number of CPU's, even for a single processor.
+<p></p>
+<li></li>
+The default PCR size of 240 (used when an STS has a stated size of 0)
+may be too large.  Typical average STS product length is around 165,
+and the default margin (M) of 50 will miss many.  Therefore, either
+use a larger margin, or else separate your 0-length STS's from the
+rest and run them with a larger margin (M) value.
+<p></p></ul>
+<p>
+</p>
+<h2><a name="details">DETAILS</a></h2>
+<pre>
+            Figure 1. How me-PCR views a search
+              once the left primer is found.
+  
+                PCR product size
+                       |                  M (margin)
+       |---------------+---------------|       |
+       |                               |-------+-----|
+       A                 B             C             D
+       
+  -//--[nnnn#####n]-----(&lt;-------------+--[nnnnn]---]&gt;)----//--</pre>
+<pre>
+       |--+-------|                       |-----|
+          |                                  |
+         /  |-+-|                      &quot;Right&quot; primer
+         |     \         |                           |
+      &quot;Left&quot;  Hash       |-------------+-------------|
+      primer  word                     |
+              (W)             Possible location of
+                                 right primer</pre>
+<pre>
+          A = sequence position of left primer
+          B = leftmost possible position of left side of right primer
+          C = expected position of right side of right primer
+          D = rightmost possible position of right side of right primer</pre>
+<p>For each primer of an STS, a ``hash word'' is computed, which is
+essentially W adjacent bases somewhere inside the primer compressed
+into a 32-bit integer, where each of the four bases occupies two binary
+bits.  Unlike original e-PCR, the hash word can occur anywhere, not
+just at the end.  Both primers are used because me-PCR searches for
+the STS in both forward and reverse orientations.  In Figure 1, the
+bases contributing to the hash word are denoted by pound signs.  A
+primer can not be hashed if the W value is larger than the primer
+is long or if ambiguity symbols in the primer prevent the occurrence
+of W adjacent bases.  If a primer can't be hashed, a warning is
+displayed, and the STS will not be searched for in the corresponding
+orientation.</p>
+<p>Pointers to the STS's are placed in a hash table, which is simply an
+array of <em>X</em> pointers, where <em>X</em> is the number of possible hash
+words (2 raised to the 2*W power)  (For large values of W,
+this table becomes very large; at W=11, the usage is 16 MB.) Note
+that it is perfectly possible for primers to share the same hash value
+(and hence hash table entry), in which case they are said to collide.
+Such colliding primers are dealt with by a linked list extending from
+the hash table entry.</p>
+<p>When searching, me-PCR slides a W-sized window across the
+underlying sequence.  For each W-sized window, me-PCR computes
+the corresponding hash value and determines which primers have a
+matching hash word.  This determination is instantaneously provided by
+a simple array index operation.  In the case that multiple primers
+match because they share the same hash word, me-PCR looks at each
+in turn by following a linked list from the main hash table entry.  If
+the hash value of a primer matches, a direct string comparison is made
+against the entire primer.  If this comparison succeeds, then direct
+string comparisons of the second primer against the underlying sequence
+are made.  The second primer has an expected offset relative to the
+first primer (implied by a known PCR amplicon size), but the margin
+parameter M allows the position of the second primer to vary relative
+to the first, at the computational cost of 2*M additional string
+comparisons.</p>
+<p>The sensitivity of a search is primarily dictated by two parameters:
+the number of potential mismatches <em>N</em> in the STS other than the hash
+word, and the margin <em>M</em>.  As stringency is decreased (i.e.
+N or M is increased), the likelihood of a match increases.
+However, a trade-off exists between stringency and the probability of
+a false hit.</p>
+<p>
+</p>
+<h2><a name="differences_from_original_epcr_as_of_2002______no_longer_applicable_____">DIFFERENCES FROM ORIGINAL e-PCR AS OF 2002 (*** NO LONGER APPLICABLE ***)</a></h2>
+<p>e-PCR is much improved and in general should be used instead of me-PCR.</p>
+<ul>
+<li></li>
+Feature: me-PCR is multithreaded, allowing convenient and efficient use of
+multiprocessor systems.
+<p></p>
+<li></li>
+Feature: ranges in the PCR size input field are now accepted (e-PCR v.2 does
+this also).
+<p></p>
+<li></li>
+Feature: optional interpretation of IUPAC symbols in STS's.
+<p></p>
+<li></li>
+Feature: the default STS size is now user-selectable (it was formerly
+fixed at 240 for STS's).
+<p></p>
+<li></li>
+Bugfix: a bug is fixed in which some hits would be misreported.
+<p></p>
+<li></li>
+Bugfix: a bug is fixed in which some potential matches would be missed near
+the edge of the sequence.
+<p></p>
+<li></li>
+Enhancement: up to 60% faster than e-PCR v.2 using the same parameters.
+<p></p>
+<li></li>
+Enhancement: word size W now has a maximum value of 16 instead of 8.  Increasing
+the word size to 11 can make me-PCR more than <strong>4 times faster</strong> than with
+a word size of 8.
+<p></p>
+<li></li>
+Enhancement: the new X parameter to disallow 3' mismatches in both primers.
+<p></p>
+<li></li>
+Bugfix/enhancement: Primers can now be very large, allowing the use of SNP flanking
+sequences as virtual primers.
+<p></p>
+<li></li>
+Bugfix: if an STS can't be searched for in one orientation (because of an
+ambiguous or short primer, for instance), it is still
+searched for in the other orientation.
+<p></p>
+<li></li>
+Bugfix: <em>all</em> hits for an STS anchored at the same left sequence
+position are reported (e-PCR would only report the first one).
+This happens sometimes in repetitive regions.
+<p></p>
+<li></li>
+Enhancement, sort of: the margin (M) parameter can now be 0.
+<p></p>
+<li></li>
+Bugfix: invalid command-line parameters are now reported as errors
+instead of being silently coerced to default values.
+<p></p></ul>
+<p>
+</p>
+<hr />
+<h1><a name="options">OPTIONS</a></h1>
+<dl>
+<dt><strong><a name="item_i_3dn__2d_iupac_flag">I=<em>n</em> - IUPAC flag</a></strong><br />
+</dt>
+<dd>
+<pre>
+  0 = don't honor IUPAC ambiguity symbols in STS's (default)
+  1 = honor IUPAC ambiguity symbols in STS's</pre>
+</dd>
+<dd>
+<p>The new optional I (IUPAC) parameter allows me-PCR to correctly
+interpret ambiguity symbols in STS's.  The IUPAC-based comparison is
+performed only for primers containing ambiguity symbols; a faster
+comparison is always performed for unambiguous primers.</p>
+</dd>
+<dd>
+<p>The original me-PCR program does not honor ambiguous base symbols such
+as 'N','W', etc, during direct string comparisons.  If the N parameter
+is 0 in original me-PCR, the effective result is that no STS containing
+an ambiguous base symbol will ever be localized.  Likewise, if the N
+parameter is 0, no STS will ever be localized in a region of the
+underlying sequence which itself contains ambiguous base characters.</p>
+</dd>
+<dd>
+<p>me-PCR does <em>not</em> honor IUPAC symbols in the underlying sequence,
+e.g.  an 'A' in an STS will never match an 'N' in the underlying
+sequence.  This is not an unreasonable limitation, because the vast
+majority of ambiguity symbols in chromosome assemblies are merely
+placeholders for gaps, taking the form of large blocks of 'N' symbols.</p>
+</dd>
+<dt><strong><a name="item_margin">M=<em>n</em> - Search margin (default 50)</a></strong><br />
+</dt>
+<dd>
+The M (margin) parameter controls the allowed distance between the
+primers of an STS; it allows some flex in the stated STS size of STS's
+and permits the localization of STS's without a known STS size.  In
+the latter case, the Z value is important.  Increasing the M
+value increases the likelihood of finding STS's at the cost of
+performance.  Also, as M increases, the likelihood of finding
+multiple matches increases.
+</dd>
+<dd>
+<p>me-PCR allows an M value as low as 0, which, while not generally
+useful, is the most stringent search condition possible.</p>
+</dd>
+<dd>
+<p>For ranged PCR sizes (product lengths), the margin value is applied to
+range, so that, if the range is 100-150 and M is 50, the effective
+range is 50-200.</p>
+</dd>
+<p></p>
+<dt><strong><a name="item_n_3dn">N=<em>n</em></a></strong><br />
+</dt>
+<dd>
+Setting N greater than 0 relaxes stringency and increases the chance
+of false hits.  Setting N greater than 0 allows <em>n</em> mismatches
+anywhere in the primers except in the hash word (the 3' side of the
+left primer) and, optionally, the 3' side of the right primer, when
+the <em>X</em> parameter is nonzero.
+</dd>
+<p></p>
+<dt><strong><a name="item_x_3dn">X=<em>n</em></a></strong><br />
+</dt>
+<dd>
+If you are allowing mismatches with a nonzero N value, you may want to
+use the new X parameter to disallow mismatches on the 3' end of the
+right primer (the left primer has 3'-ward mismatches implicitly
+disallowed by the has word).  The N parameter takes a numeric
+argument, which is the number of bases, counting from the 3' end of
+the right primer, which may not have mismatches, even if mismatches
+are allowed elsewhere in the primer.
+</dd>
+<p></p>
+<dt><strong><a name="item_name">O=<em>file</em> - Output file name (default stdout)</a></strong><br />
+</dt>
+<dd>
+Self-explanatory.
+</dd>
+<p></p>
+<dt><strong><a name="item_q_3dn__2d_quiet_flag">Q=<em>n</em> - Quiet flag</a></strong><br />
+</dt>
+<dd>
+<pre>
+  0 = verbose progress messages
+  1 = no progress messages (default)</pre>
+</dd>
+<dt><strong><a name="item_file">S=<em>n</em> - Max. line length for the STS file (default 1022)</a></strong><br />
+</dt>
+<dd>
+You are unlikely to need to change this!
+</dd>
+<p></p>
+<dt><strong><a name="item_threads">T=<em>n</em> - Number of threads (default 1)</a></strong><br />
+</dt>
+<dd>
+The new T parameter controls the number of threads used during the
+search.  Computers with multiple CPU's typically assign each new
+thread to a different processor.  me-PCR automatically breaks down the
+search task into one chunk per thread, so the entire search job takes
+considerably less time than with one processor.
+</dd>
+<dd>
+<p>Note that the performance increase is far from linear; the rate of 
+increase diminishes with each added thread.  This effect is typical of
+SMP computers but varies somewhat depending on operating system and
+hardware configuration.  Also note that performance increases slightly
+as the number of threads is increased above the number of CPU's.  This
+effect can be used as a ``poor man's priority booster'', but it might be
+a better idea to adjust process priorities using the official
+mechanisms appropriate for the operating system.</p>
+</dd>
+<dd>
+<p>If you are searching for STS's across multiple sequences,
+multithreading is not strictly necessary in order to take full
+advantage of multi-processor computers.  As an example, one can simply
+start 8 simultaneous instances of a single-threaded program on an
+8-processor computer, and the operating system will distribute
+the program processes across all processors.  The obvious way to do this is to
+use a shell script to start 8 instances of a program in the
+background.  If the number of jobs is larger than the number of
+processors, it is hard to control them properly with a simple shell
+script.  The danger is that too many processes will run at the same
+time, causing CPU contention and quite likely disk thrashing, if each
+program uses a lot of memory (e.g. me-PCR operating on
+chromosome-length sequence).  This problem can be solved in several
+ways: patiently running programs sequentially on one CPU (;-); writing a
+custom launcher script in Perl to run the jobs; or use GNU make.
+With a parallel make utility (such as GNU make with its 'j' option),
+many separate runs can be performed, all driven by a
+single makefile, and the make utility will ensure that exactly 8
+processes are running at any given time.  However, the 
+multithreading feature of me-PCR is much easier to use, and just as
+fast!</p>
+</dd>
+<dd>
+<p>me-PCR automatically uses just a single thread when processing
+sequences less than a certain amount, currently 100KB.</p>
+</dd>
+<dd>
+<p>me-PCR is tuned for processing very large sequences; in fact, me-PCR
+is <em>slower</em> than the latest version of e-PCR (using W = 8) when
+operating on sequences less than ca. 3 MB, because of the overhead of
+creating an extra thread.  This flaw will be fixed in the future.</p>
+</dd>
+<p></p>
+<dt><strong><a name="item_size">W=<em>n</em> - Word size (default 11)</a></strong><br />
+</dt>
+<dd>
+The W (word size) parameter controls the size of the hash word that is
+central to the algorithm's speed.  The original version of me-PCR has
+an artificial upper bound on W of 8, possibly because it was
+originally a 16-bit application.  me-PCR accepts W values up to
+16.  A larger word size is usually better.  me-PCR with a word
+size of 11 runs 4.8 times faster than with a word size of 8 (the
+maximum for original e-PCR), at a cost of just 15.8 MB RAM and 71
+STS's not searchable out of a set of 130,650 STS's from UniSTS (.05%).
+me-PCR with a word size of 11 runs over 15 times faster than with
+a word size of 7, the default word size used by original e-PCR.
+</dd>
+<dd>
+<p>The only disadvantages of a larger word size are 1) a larger memory
+requirement; 2) a possible, small increase in the number of STS's that
+won't be searched for; and 3) a possible, small increase in the number
+of STS's that can't be found when using N &gt; 0 if one of the
+bases in the hash word is 'N' or wrong.</p>
+</dd>
+<dd>
+<p>The second disadvantage affects a tiny percentage of STS's and applies
+in only two cases: 1) when the number of mismatches allowed (N) is
+nonzero; or 2) in the case of me-PCR with the IUPAC option enabled,
+even when N is 0.  The issue is that me-PCR cannot build a
+W-length hash word for a primer unless there are W consecutive
+unambiguous bases in the primer.  In the case of original me-PCR,
+the limitation is more severe in that the hash word can only occur at
+the end of the primer.  For instance, at a word size of 7, original
+me-PCR is unable to search for 128 STS's out of the test UniSTS
+set, but me-PCR is unable to search for only 1, thanks to its
+variable offset hash feature.  There is some biological justification
+for the limitation in NCBI e-PCR, but the justification becomes
+rapidly less relevant as the word size is increased.</p>
+</dd>
+<dd>
+<p>If you want to use me-PCR to search for STS's containing ambiguous
+bases, there are two options.  First, you can run me-PCR with the
+mismatch parameter N greater than 0.  Doing so will reduce the
+stringency unnecessarily to treat a very special case.  The preferable
+alternative is to run me-PCR with the mismatch parameter N set to
+0 and the IUPAC parameter set to 1.  This will retain stringency for
+all STS's except those with ambiguous bases, and will only allow
+IUPAC-determined mismatches in the latter.</p>
+</dd>
+<dd>
+<p>A word size of around 11 seemed to produce optimal results.  The
+optimal word size depends on platform and available memory, but word
+sizes of 10-12 are generally best. However, if too large a word size
+is specified, such that the memory demands of the hash table exceed
+physical memory, performance plummets due to page swapping.</p>
+</dd>
+<dd>
+<p>The following table shows the relationship of word size W to hash
+table memory usage:</p>
+</dd>
+<dd>
+<pre>
+   W     Memory  Time
+  --   --------  ----
+   1       0 MB    NA
+   2       0 MB    NA
+   3       0 MB    NA
+   4       0 MB    NA
+   5       0 MB  4238
+   6       0 MB  1143
+   7      .1 MB   315
+   8      .2 MB    96
+   9       1 MB    37
+  10       4 MB    23
+  11      16 MB    20
+  12      64 MB    21
+  13     256 MB    25
+  14   1,024 MB  2232
+  15   4,096 MB    NA
+  16  16,384 MB    NA</pre>
+</dd>
+<dd>
+<p>The time column shows the time to run ca. 80,000 STS's against
+chromosome 19 on an 867 MHz G4 OS X computer with 1.1 GB RAM.
+Cells marker 'NA' were not tested.</p>
+</dd>
+<p></p>
+<dt><strong>Z=<em>n</em> - Default PCR size (default 240)</strong><br />
+</dt>
+<dd>
+The Z option determines the default STS size if the latter field has
+been assigned 0 in the STS input file.  In the absence of the Z
+option, me-PCR follows the behavior of original me-PCR, which is to
+assign a default STS size of 240.
+</dd>
+<dd>
+<p>In one database of 70,498 human STS's, the average STS length is
+165, the median is 155, and the percent of lengths between 190 and 290
+(the range implied by the default margin (M) value of 50) is 24%.
+8.1% of our test STS set has zero length.  Given a similar dataset,
+researchers may wish to tune the default STS length using the Z option
+on the me-PCR command line.  Use of a generous margin value M is also
+recommended.  A Perl script for evaluating an STS set is provided in
+the me-PCR distribution.  Alternatively, and possibly as a matter
+of course, users may wish to separate STS's with 0 length and run them
+with a large M parameter value.</p>
+</dd>
+<p></p></dl>
+<p>
+</p>
+<hr />
+<h1><a name="return_value">RETURN VALUE</a></h1>
+<p>0 if a search can be made; nonzero otherwise.</p>
+<p>
+</p>
+<hr />
+<h1><a name="diagnostics">DIAGNOSTICS</a></h1>
+<p>Use the V=1 switch to turn on verbose messages.  These are written
+to STDERR; you may want to redirect to a file.</p>
+<p>
+</p>
+<hr />
+<h1><a name="files">FILES</a></h1>
+<p>
+</p>
+<h2><a name="sts_input_file">STS INPUT FILE</a></h2>
+<p>The STS input file should have the following format:</p>
+<pre>
+    Field 1: Unique Id
+    Field 2: Primer1
+    Field 3: Primer2
+    Field 4: PCR product size in bp
+    Fields 5+: optional</pre>
+<p>This format is compatible with the UniSTS data file format (e.g.
+UniSTS_human.sts).</p>
+<p>Lines are terminated by linefeeds (ASCII 10), the convention for UNIX
+text files.</p>
+<p>The product size may be a range of numbers separated by a dash.</p>
+<p>The unique ID is important for identifying output lines but is
+otherwise ignored.</p>
+<p>Primers should not use notation such as '[A/T]'.</p>
+<p>
+</p>
+<h2><a name="fasta_input_file">FASTA INPUT FILE</a></h2>
+<p>The FASTA input file should be a UNIX-style text file with the
+following format:</p>
+<pre>
+  &gt;label
+  nnnnnnnnnn...
+  ...</pre>
+<p>There can now be multiple sequences in this file.  However, me-PCR
+does not yet assign individual sequences to separate threads.
+Therefore, for high-thoughput processing of many small sequences, it
+would currently be better to process them with separate invocations of
+me-PCR, controlled by a shell script or makefile.</p>
+<p>
+</p>
+<hr />
+<h1><a name="caveats">CAVEATS</a></h1>
+<ul>
+<li></li>
+Not much error-checking is done on the input STS file.  The file must
+be tab-delimited and not have extra spaces.  Outrageous values may not
+be detected for some fields.
+<p></p>
+<li></li>
+Only one sequence is allowed in the input FASTA file.
+<p></p></ul>
+<p>
+</p>
+<hr />
+<h1><a name="notes">NOTES</a></h1>
+<ul>
+<li></li>
+STS memory usage and frequency of allocation is excessive.
+<p></p>
+<li></li>
+Memory usage of the FASTA sequence could be greatly reduced.
+<p></p>
+<li></li>
+There is no GUI frontend.
+<p></p>
+<li></li>
+There should be an automatic ``iterative'' front-end that automatically
+relaxes stringency in stages, setting aside the matching STS's at each
+stage.
+<p></p>
+<li></li>
+The C++ code is very rough; the C-style multithreading code has been
+crudely strapped on.  There are archaic sections of the code (such as
+the support for Mac OS 9) that need cleaning up.
+<p></p>
+<li></li>
+me-PCR is slower than e-PCR for small sequences because of thread
+overhead.  For small sequences, me-PCR should never create additional
+threads.
+<p></p></ul>
+<p>
+</p>
+<h2><a name="testing_methodology">TESTING METHODOLOGY</a></h2>
+<p>me-PCR's output is tested against NCBI's e-PCR versions and
+double-checked with custom Perl scripts, such as the provided
+find_sts.pl program, to ensure no false positives.  False negatives
+are eliminated using a custom test case generator that methodically
+generates thousands of combinations of STS and FASTA files.  These
+test cases were designed to exercise boundary conditions within
+me-PCR and reduce the chance of bugs. Memory handling is checked
+using dmalloc.  Multithreaded operation is tested and verified on Sun
+Solaris, IBM AIX, Apple OS X, SuSE Linux, and Microsoft XP platforms.</p>
+<p>
+</p>
+<hr />
+<h1><a name="see_also">SEE ALSO</a></h1>
+<p><a href="http://genome.chop.edu/mePCR">http://genome.chop.edu/mePCR</a></p>
+<p>e-PCR (ftp://ftp.ncbi.nih.gov/pub/schuler/e-PCR/)</p>
+<p>
+</p>
+<hr />
+<h1><a name="authors">AUTHORS</a></h1>
+<p>Original author: G. D. Schuler, NCBI</p>
+<p>Current tweaker: Kevin Murphy, Children's Hospital of Philadelphia
+&lt;<a href="mailto:murphy@genome.chop.edu">murphy@genome.chop.edu</a>&gt;</p>
+<p>
+</p>
+<hr />
+<h1><a name="changes">CHANGES</a></h1>
+<pre>
+  2008-02-18 1.0.6: Small sequences no longer cause aborts for T&gt;1.
+  2004-04-13 1.0.5c: Multiple sequences in FASTA files accepted.
+  2004-04-05 1.0.5b: X parameter added.  Tested on AIX.</pre>
+<p>
+</p>
+<hr />
+<h1><a name="history">HISTORY</a></h1>
+<p>me-PCR was developed by Kevin Murphy in Dr. Peter White's lab at
+Children's Hospital of Philadelphia to be an enhanced version of G. D.
+Schuler's e-PCR program, used and distributed by NCBI.  Dr. Schuler
+published a paper about e-PCR: ``Sequence mapping by Electronic PCR'',
+Genome Research 7: 541-550, 1997. Thanks to Dr. Schuler for making his
+source code available.
+</p>
+<table border="0" width="100%" cellspacing="0" cellpadding="3">
+<tr><td class="block" style="background-color: #cccccc" valign="middle">
+<big><strong><span class="block">&nbsp;me-PCR - multithreaded electronic PCR: find STS's in FASTA sequence</span></strong></big>
+</td></tr>
+</table>
+
+</body>
+
+</html>

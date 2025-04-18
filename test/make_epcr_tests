@@ -1,0 +1,1086 @@
+#!/usr/bin/perl
+# Scripts for making regression tests for me-PCR.
+# For usage, run:       make_epcr_tests --help
+# For full help, run:   make_epcr_tests --man
+
+use Getopt::Long qw(GetOptions);
+use Pod::Man ();
+use Pod::Usage qw(pod2usage);
+
+use warnings;
+use strict;
+
+our $revision = '$Revision: 1.4 $';
+our $revision_date = '$Date: 2004/04/12 19:36:10 $';
+our $release_name = '$Name:  $';
+our %options;
+GetOptions (\%options,
+    'prog=s',
+    'frontend=s',
+    'version|V',    
+    'help|h',
+    'man'
+) or exit 1;
+
+pod2usage (0) if $options{'help'};
+pod2usage(-verbose => 2) if $options{'man'};
+
+if ($options{'version'}) {
+    print "$0\n$revision\n";
+    print "$revision_date\n";
+    print "$release_name\n" if $release_name ne '$Name:  $';
+    my $in_copyright = 0;
+    while (<DATA>) {
+       if (!$in_copyright) {
+          $in_copyright = 1 if /^=head1 COPYRIGHT/;
+       } else {
+          last if /^=head1/;     # break out of while loop when we are done the copyright section
+          print unless /^\s*$/;  # print a line from the copyright section
+       }
+    } # end while
+    exit 0;
+}
+
+# main code
+
+# Make a STS and FASTA file (or files) suitable for testing e-PCR,
+# together with a test driver script.
+
+# A reminder: a line in the STS file looks like:
+# CVE1	GGGGGTCTACGCTAAACTGA	ACCAACCTGCACCATTAAAA	241	D1S2132
+
+use POSIX qw(ceil);
+use File::Find;
+
+sub make_script;   # forward declaration
+sub make_sts_line; # forward declaration
+
+our $test = 0;
+our $sts_file;
+our $sts_name;
+our $fasta_file;
+our $fasta_name;
+our $script_file;
+our $script_name;
+
+#
+# Verify subtest arguments
+#
+pod2usage("\n*** You must specify at least one subtest set to run\n") if scalar @ARGV == 0;
+
+my %subtests = map {$_=>1} qw(all offset voh rvoh multi bogus mismatches z random1 random2 iupac threads random_threads);
+
+foreach my $subtest (@ARGV) {
+    pod2usage("\n*** Invalid subtest: '$subtest'\n") unless $subtests{$subtest};
+}
+
+# A sample STS to use
+my %sample_sts = (
+'id' => "CVE1",
+'p1' => "GGGGGTCTACGCTAAACTGA",
+'p2' => "ACCAACCTGCACCATTAAAA",
+'size' => 241,
+'alias' => "D1S2132"
+);
+
+# Some sample FASTA backgrounds to use
+my @sample_fa = (
+"N" x 1000,
+"AC" x 500,
+"AN" x 500,
+"AAN"x333 . "A"
+);
+
+my %tests;
+
+foreach (@ARGV) {
+    $tests{$_} = 1;
+}
+
+my $TEST_DIR = "epcr_tests";
+
+-d $TEST_DIR or mkdir $TEST_DIR or die "error creating directory $TEST_DIR: $!";
+
+my $TESTCASE_DIR = "$TEST_DIR/test_cases";
+
+# Build a full path to e-PCR in the current directory.
+# I.e. you should create a link there to the version you want to test.
+
+our $epcr_prog;
+
+if ($options{'prog'}) {
+  # user specified program name/path on command line
+  $epcr_prog = $options{'prog'};
+} else {
+  # need to ask user where to find me-PCR
+  # let's be smart and find it ourselves.
+  # note to reader: this was totally unnecessary, but fun.
+  my %possible_paths = map {$_ => 1} split(':', $ENV{'PATH'});
+  my @definite_paths;
+  $possible_paths{'../src'} = 1;  # add a likely spot probably not in path
+  for my $path (keys %possible_paths) {
+    $path =~ s/\/$//;  # strip off any trailing slash
+    push @definite_paths, "$path/me-PCR" if -x "$path/me-PCR";
+  }
+  print STDERR <<'EOT';
+Next you will be asked for the me-PCR program to use in the tests.  If
+the correct version of me-PCR is in your execution path, you can
+simply enter 'me-PCR'.  (You can avoid this prompt by using the --prog=path
+switch.)
+EOT
+  if (@definite_paths) {
+    print STDERR "\nFound:\n";
+    foreach my $i (1..$#definite_paths+1) {
+      print STDERR "$i) $definite_paths[$i-1]\n";
+    }
+    print STDERR "\n>>> Enter number, or other path to me-PCR program to use in the tests: ";
+  } else {
+    print STDERR "\n>>> Enter path to me-PCR program to use in the tests: ";
+  }
+  $epcr_prog = <STDIN>;
+  print STDERR "\n";
+  chomp $epcr_prog;
+  if ($epcr_prog =~ /^\d+$/) {
+    if (@definite_paths && $definite_paths[$epcr_prog-1]) {
+      $epcr_prog = $definite_paths[$epcr_prog-1];
+    } else {
+      die "'$epcr_prog' is not a number from the above list";
+    }
+  }
+}  # end else non-interactive program specification
+
+
+die "'$epcr_prog' not found or not executable" unless -x $epcr_prog;
+print STDERR "Using program path: $epcr_prog\n";
+# aha, but if $epcr_prog is relative to this directory (does not begin
+# with a slash), then the scripts (down a directory) will need to grab
+# one higher to get at it, so prepend '../' in this case:
+$epcr_prog =~ s,^([^/]),../$1,;
+
+# Insert the front-end program, if any
+$epcr_prog = "$options{'frontend'} $epcr_prog" if $options{'frontend'};
+
+my $cmd;
+
+-d $TESTCASE_DIR or mkdir $TESTCASE_DIR or die "error making $TESTCASE_DIR: $!";
+
+# Remove all .pl, .fa, and .sts files in the test cases directory tree.
+sub find_proc {
+    /test.*\.(pl|fa|sts)/ and unlink $_;
+}
+find(\&find_proc, $TESTCASE_DIR);
+
+# This array will be filled with test script names, which will be
+# massaged a bit when generating the actual makefile (see 'open (make' below).
+my @make_targets;
+
+
+if ($tests{'all'} || $tests{'offset'}) {
+#
+# Test an sts at different file offsets from the beginning and end of
+# the sequence and with different gaps between primers.  Test this for
+# different numbers of threads.
+#
+    my $test_subdir = "$TESTCASE_DIR/offset";
+    mkdir $test_subdir or die "error making $test_subdir: $!";
+
+    my $gap = 0;
+    foreach my $threads (1,2,3) {
+	foreach my $rel_offset (-16..15) {
+	    print STDERR "threads $threads, rel_offset $rel_offset\n";
+	    open_test($test_subdir);
+	    my %s = %sample_sts;
+	    my $fa = random_fa(100_000);
+	    my $real_sts_size = length($s{'p1'})+length($s{'p2'})+$gap;
+	    my $offset = ($rel_offset < 0) ? length($fa) - $real_sts_size + $rel_offset + 1 : $rel_offset;
+	    substr($fa,$offset,length($s{'p1'})) = $s{'p1'};
+	    substr($fa,$offset+length($s{'p1'})+$gap,length($s{'p2'})) = revcmp($s{'p2'});
+	    print $fasta_file ">test$test Test offset $rel_offset\n" . linefeedize($fa);
+	    print $script_file make_script( 'id'       => $s{'id'},
+					    'offset'   => $offset,
+					    'size'     => $real_sts_size,
+					    'wordsize' => 11,
+					    'threads'  => $threads);
+	    $s{'size'} = $real_sts_size;
+	    print $sts_file make_sts_line(%s);
+	    close_test();
+	    push @make_targets, $script_name;
+	    $test++;
+	    $gap++;
+	}
+    }
+} # end offset tests
+
+
+
+if ($tests{'all'} || $tests{'voh'}) {
+#
+# Test variable offset hashing
+#
+    my $test_subdir = "$TESTCASE_DIR/voh";
+    
+    -d $test_subdir or mkdir $test_subdir or die "error making $test_subdir: $!";
+
+    my $gap = 50;
+    foreach my $wordsize (5..13) {
+	my %s = %sample_sts;
+	foreach my $hash_offset (0..length($s{'p1'})-$wordsize) {
+	    open_test($test_subdir);
+	    my $fa = $sample_fa[$test % 4];
+	    my $real_sts_size = length($s{'p1'})+length($s{'p2'})+$gap;
+	    my $offset = $test % 19;
+	    substr($fa,$offset,length($s{'p1'})) = $s{'p1'};
+	    substr($fa,$offset+length($s{'p1'})+$gap,length($s{'p2'})) = revcmp($s{'p2'});
+	    print $fasta_file ">test$test Test VOH\n" . linefeedize($fa);
+	    print $script_file make_script( 'id'       => $s{'id'}, 
+					    'offset'   => $offset, 
+					    'size'     => $real_sts_size, 
+					    'wordsize' => $wordsize,
+					    'iupac'    => 1,
+					    'margin'   => 0);
+	    $s{'size'} = $real_sts_size;
+	    my $n_offset = $hash_offset + $wordsize;
+	    my $n_block = "N"x(length($s{'p1'})-$n_offset);
+	    $s{'p1'} =~ s/(.{$n_offset}).*/$1$n_block/;
+	    print $sts_file make_sts_line(%s);
+	    close_test();
+	    push @make_targets, $script_name;
+	    $test++;
+	    $gap++;
+	}
+    }
+}
+
+
+if ($tests{'all'} || $tests{'rvoh'}) {
+#
+# Test variable offset hashing in reverse
+#
+    my $test_subdir = "$TESTCASE_DIR/rvoh";
+    -d $test_subdir or mkdir $test_subdir or die "error making $test_subdir: $!";
+
+    my $gap = 50;
+    foreach my $wordsize (5..13) {
+	my %s = %sample_sts;
+	foreach my $hash_offset (0..length($s{'p2'})-$wordsize) {
+	    open_test($test_subdir);
+	    my $fa = $sample_fa[$test % 4];
+	    my $real_sts_size = length($s{'p1'})+length($s{'p2'})+$gap;
+	    my $offset = $test % 19;
+	    substr($fa,$offset,length($s{'p2'})) = $s{'p2'};
+	    substr($fa,$offset+length($s{'p2'})+$gap,length($s{'p1'})) = revcmp($s{'p1'});
+	    print $fasta_file ">test$test Test reverse VOH\n" . linefeedize($fa);
+	    print $script_file make_script( 'id'       => $s{'id'}, 
+					    'offset'   => $offset, 
+					    'size'     => $real_sts_size, 
+					    'wordsize' => $wordsize,
+					    'iupac'    => 1,
+					    'margin'   => 50,
+					    'quiet'    => 0);
+	    $s{'size'} = $real_sts_size;
+	    my $n_offset = $hash_offset + $wordsize;
+	    my $n_block = "N"x(length($s{'p2'})-$n_offset);
+	    $s{'p2'} =~ s/(.{$n_offset}).*/$1$n_block/;
+	    print $sts_file make_sts_line(%s);
+	    close_test();
+	    push @make_targets, $script_name;
+	    $test++;
+	    $gap++;
+	}
+    }
+}
+
+if ($tests{'all'} || $tests{'multi'}) {
+#
+# Test multiple sequences in one fasta file
+#
+    my $test_subdir = "$TESTCASE_DIR/multi";
+    -d $test_subdir or mkdir $test_subdir or die "error making $test_subdir: $!";
+
+    my $gap = 50;
+    foreach my $num_seqs (2,3,99,100,101,201) {
+	my %s = %sample_sts;
+	my $wordsize = int(rand(10))+5;
+	my $hash_offset = int(rand(length($s{'p2'})-$wordsize+1));
+	open_test($test_subdir);
+	my $fa = $sample_fa[$test % 4];
+	my $real_sts_size = length($s{'p1'})+length($s{'p2'})+$gap;
+	my $offset = $test % 19;
+	substr($fa,$offset,length($s{'p2'})) = $s{'p2'};
+	substr($fa,$offset+length($s{'p2'})+$gap,length($s{'p1'})) = revcmp($s{'p1'});
+	foreach my $sub_seq (1..$num_seqs) {
+	  print $fasta_file ">test${test}_${sub_seq} Test multiple sequences\n" . linefeedize($fa);
+	}
+	print $script_file make_script( 'id'       => $s{'id'}, 
+					'offset'   => $offset, 
+					'size'     => $real_sts_size, 
+					'wordsize' => $wordsize,
+					'iupac'    => 1,
+					'margin'   => 50,
+					'hits'     => $num_seqs,
+					'quiet'    => 0);
+	$s{'size'} = $real_sts_size;
+	my $n_offset = $hash_offset + $wordsize;
+	my $n_block = "N"x(length($s{'p2'})-$n_offset);
+	$s{'p2'} =~ s/(.{$n_offset}).*/$1$n_block/;
+	print $sts_file make_sts_line(%s);
+	close_test();
+	push @make_targets, $script_name;
+	$test++;
+	$gap++;
+    }
+}
+
+if ($tests{'all'} || $tests{'mismatches'}) {
+#
+# Test mismatches (N and X options).
+#
+
+# *) For even and odd primer lengths, after sticking the primers
+# in the fasta substrate, walk an invalid base down each primer but
+# NOT in the hash word of the left primer, verifying that there is a
+# hit when N=1 or 2 and no hit when N=0.
+
+# *) Verify that when N=2 that 2 mismatches in each primer at the same
+# time still result in a hit.
+
+
+  my $test_subdir = "$TESTCASE_DIR/mismatches";
+    
+  -d $test_subdir or mkdir $test_subdir or die "error making $test_subdir: $!";
+  
+  my $gap = 50;
+  my $wordsize = 5;
+  # *) Verify that when X=1..3 and N=1 that mismatches in the 3' end of
+  # the right primer do not result in hits.
+  my %s = %sample_sts;
+  foreach my $X (1..3) {
+    open_test($test_subdir);
+    my $fa = $sample_fa[$test % 4];
+    my $real_sts_size = length($s{'p1'})+length($s{'p2'})+$gap;
+    my $offset = $test % 19;
+    substr($fa,$offset,length($s{'p1'})) = $s{'p1'};
+    # The second primer gets a mutation in the ($X - 1)nth base (3' side)
+    substr($fa,$offset+length($s{'p1'})+$gap,length($s{'p2'})) = mutate(revcmp($s{'p2'}), $X-1);
+    print $fasta_file ">test$test Test X\n" . linefeedize($fa);
+    print $script_file make_script( 'id'         => $s{'id'}, 
+				    'offset'     => $offset, 
+				    'size'       => $real_sts_size, 
+				    'wordsize'   => $wordsize,
+				    'iupac'      => 0,
+				    'mismatches' => 1,
+				    'x'          => $X,
+				    'margin'     => 22,
+				    'hits'       => 0);
+    $s{'size'} = $real_sts_size;
+    print $sts_file make_sts_line(%s);
+    close_test();
+    push @make_targets, $script_name;
+    $test++;
+    $gap++;
+  }
+  # *) Verify that when X=1..3 and N=1 that mismatches in the 3' at offsets
+  # 3, ... length(p2)-1 in the right primer _do_ result in hits.
+  foreach my $X (1..3) {
+    my %s = %sample_sts;
+    foreach my $mutate_offset (3..length($s{'p2'})-1) {
+      open_test($test_subdir);
+      my $fa = $sample_fa[$test % 4];
+      my $real_sts_size = length($s{'p1'})+length($s{'p2'})+$gap;
+      my $offset = $test % 19;
+      substr($fa,$offset,length($s{'p1'})) = $s{'p1'};
+      # The second primer gets a mutation in the ($X - 1)nth base (3' side)
+      substr($fa,$offset+length($s{'p1'})+$gap,length($s{'p2'})) = mutate(revcmp($s{'p2'}), $mutate_offset);
+      print $fasta_file ">test$test Test X\n" . linefeedize($fa);
+      print $script_file make_script( 'id'         => $s{'id'}, 
+				      'offset'     => $offset, 
+				      'size'       => $real_sts_size, 
+				      'wordsize'   => $wordsize,
+				      'iupac'      => 0,
+				      'mismatches' => 1,
+				      'margin'     => 20,
+				      'x'          => $X,
+				      'hits'       => 1);
+      $s{'size'} = $real_sts_size;
+      print $sts_file make_sts_line(%s);
+      close_test();
+      push @make_targets, $script_name;
+      $test++;
+      $gap++;
+    } # end foreach mutation point
+  } # end foreach X
+} # end mismatches test
+
+#
+# This test demonstrates how to make a test that should result in 0 hits.
+# I.e., 'hits' is 0.
+#
+if ($tests{'all'} || $tests{'bogus'}) {
+
+    my $test_subdir = "$TESTCASE_DIR/bogus";
+    -d $test_subdir or mkdir $test_subdir or die "error making $test_subdir: $!";
+
+    open_test($test_subdir);
+    my $fa = $sample_fa[1];
+    my %s = %sample_sts;
+    print $fasta_file ">test$test Test no-match\n" . linefeedize($fa);
+    print $script_file make_script( 'id'       => $s{'id'}, 
+				    'offset'   => 0, 
+				    'size'     => 50,
+				    'wordsize' => 7,
+				    'iupac'    => 1,
+				    'margin'   => 50,
+				    'quiet'    => 0,
+				    'hits'     => 0);
+    print $sts_file make_sts_line(%s);
+    close_test();
+    push @make_targets, $script_name;
+    $test++;
+}
+
+
+#
+# Test the Z (default pcr size for sts's with 0 size) option by
+# setting it to 500 and using a margin of 2.  We will test against
+# sts's of sizes 497 (should be no hit), 498, 499, 500, 501, 502, and
+# 503 (should be no hit).
+#
+if ($tests{'all'} || $tests{'z'}) {
+
+    my $test_subdir = "$TESTCASE_DIR/z";
+    -d $test_subdir or mkdir $test_subdir or die "error making $test_subdir: $!";
+
+    my $margin = 2;
+    my $z = 500;
+    foreach my $size_delta (-($margin+1)..+($margin+1)) {
+	open_test($test_subdir);
+	my %s = %sample_sts;
+	$s{'size'} = 0;
+	my $fa = $sample_fa[$test % 4];
+	my $offset = 100 + ($test % 16);
+	my $gap = $z + $size_delta - length($s{'p1'}) - length($s{'p2'});
+	substr($fa,$offset,length($s{'p1'})) = $s{'p1'};
+	substr($fa,$offset+length($s{'p1'})+$gap,length($s{'p2'})) = revcmp($s{'p2'});
+	print $fasta_file ">test$test Test Z switch, delta $size_delta\n" . linefeedize($fa);
+	print $script_file make_script( 'id'       => $s{'id'}, 
+					'offset'   => $offset, 
+					'size'     => $z + $size_delta,
+					'wordsize' => ($test % 8)+5,
+					'iupac'    => 1,
+					'margin'   => $margin,
+					'quiet'    => 0,
+					'z'        => 500,
+					'hits'     => (abs($size_delta) > $margin ? 0 : 1)
+					);
+	print $sts_file make_sts_line(%s);
+	close_test();
+	push @make_targets, $script_name;
+	$test++;
+    }
+}
+
+
+
+#
+# Do some random test cases.
+# 
+#
+if ($tests{'all'} || $tests{'random1'}) {
+
+    my $test_subdir = "$TESTCASE_DIR/random1";
+    -d $test_subdir or mkdir $test_subdir or die "error making $test_subdir: $!";
+    
+    for (my $i=0; $i<200; $i++) {
+	open_test($test_subdir);
+	my %s = %sample_sts;
+	my $fa = $sample_fa[$test % 4];
+	my $offset = int(rand(900));
+	my $gap = int(rand(1000 - $offset - length($s{'p1'}) - length($s{'p2'})));
+	$s{'size'} = length($s{'p1'}) + length($s{'p2'}) + $gap;
+	substr($fa,$offset,length($s{'p1'})) = $s{'p1'};
+	substr($fa,$offset+length($s{'p1'})+$gap,length($s{'p2'})) = revcmp($s{'p2'});
+	print $fasta_file ">test$test Test random1\n" . linefeedize($fa);
+	print $script_file make_script( 'id'       => $s{'id'}, 
+					'offset'   => $offset, 
+					'size'     => $s{'size'},
+					'wordsize' => ($test % 8)+5,
+					'iupac'    => int(rand(2)),
+					'margin'   => 0,
+					'quiet'    => 0,
+					);
+	print $sts_file make_sts_line(%s);
+	close_test();
+	push @make_targets, $script_name;
+	$test++;
+    }
+}
+
+
+#
+# Do some more random test cases.
+# 
+#
+if ($tests{'all'} || $tests{'random2'}) {
+
+    my $test_subdir = "$TESTCASE_DIR/random2";
+    -d $test_subdir or mkdir $test_subdir or die "error making $test_subdir: $!";
+
+    for (my $i=0; $i<500; $i++) {
+	open_test($test_subdir);
+	my %s = %sample_sts;
+	my $wordsize = ($test % 8)+5;
+	$s{'p1'} = rand_primer($wordsize);
+	$s{'p2'} = rand_primer($wordsize);
+	my ($len1, $len2) = (length($s{'p1'}), length($s{'p2'}));
+	my $fa = random_fa();
+	my $offset = int(rand(length($fa)-($len1+$len2)));
+	my $gap = int(rand(length($fa) - $offset - ($len1 + $len2)));
+	my $real_sts_size = $len1 + $len2 + $gap;
+	$s{'size'} = abs($real_sts_size + int(rand(101))-50);
+	substr($fa,$offset,length($s{'p1'})) = $s{'p1'};
+	substr($fa,$offset+length($s{'p1'})+$gap,length($s{'p2'})) = revcmp($s{'p2'});
+	print $fasta_file ">test$test Test random2\n" . linefeedize($fa);
+	print $script_file make_script( 'id'       => $s{'id'}, 
+					'offset'   => $offset, 
+					'size'     => $real_sts_size,
+					'wordsize' => $wordsize,
+					'iupac'    => int(rand(2)),
+					'quiet'    => 0
+					);
+	print $sts_file make_sts_line(%s);
+	close_test();
+	push @make_targets, $script_name;
+	$test++;
+    }
+}
+
+
+#
+# Do IUPAC tests.
+# Note that 'U' is not used since e-PCR doesn't support that.
+#
+if ($tests{'all'} || $tests{'iupac'}) {
+    my %iupac_mapping =
+	(
+	 'A' => "A",
+	 'C' => "C",
+	 'G' => "G",
+	 'T' => "T",
+	 'R' => "AG",
+	 'Y' => "CT",
+	 'M' => "AC",
+	 'K' => "GT",
+	 'S' => "CG",
+	 'W' => "AT",
+	 'B' => "CGT",
+	 'D' => "AGT",
+	 'H' => "ACT",
+	 'V' => "ACG",
+	 'N' => "ACGT"
+	 );
+
+    my $test_subdir = "$TESTCASE_DIR/iupac";
+    -d $test_subdir or mkdir $test_subdir or die "error making $test_subdir: $!";
+
+    foreach my $iupac (keys %iupac_mapping) {
+	foreach my $acgt (split ("",$iupac_mapping{$iupac})) {
+	    open_test($test_subdir);
+	    my %s = %sample_sts;
+	    $s{'alias'} = "${iupac}_$acgt";
+	    my ($len1, $len2) = (length($s{'p1'}), length($s{'p2'}));
+	    my $fa = random_fa();
+	    my $offset = int(rand(length($fa)-($len1+$len2)));
+	    my $gap = int(rand(length($fa) - $offset - ($len1 + $len2)));
+	    my $real_sts_size = $len1 + $len2 + $gap;
+	    $s{'size'} = abs($real_sts_size + int(rand(101))-50);
+	    my $wordsize = ($test % 6)+5;
+	    my $i1_offset = undef;
+	    my $i2_offset = undef;
+	    substr($fa,$offset,length($s{'p1'})) = $s{'p1'};
+	    substr($fa,$offset+length($s{'p1'})+$gap,length($s{'p2'})) = revcmp($s{'p2'});
+	    if ( ($test % 3) == 0) {
+		# Just put an iupac symbol in p1
+		$i1_offset = int(rand(length($s{'p1'})));
+	    } elsif ( ($test % 3) == 1) {
+		# Just put an iupac symbol in p2
+		$i2_offset = int(rand(length($s{'p2'})));
+	    } else {
+		# Put one in both
+		$i1_offset = int(rand(length($s{'p1'})));
+		$i2_offset = int(rand(length($s{'p2'})));
+	    }
+	    if ($i1_offset) {
+		substr($s{'p1'},$i1_offset,1) = $iupac;
+		substr($fa,$offset+$i1_offset,1) = $acgt;
+	    }
+	    if ($i2_offset) {
+		substr($s{'p2'},$i2_offset,1) = revcmp($iupac);
+		substr($fa,$offset+length($s{'p1'})+$gap+length($s{'p2'})-($i2_offset+1),1) = $acgt;
+	    }
+	    print $fasta_file ">test$test\n" . linefeedize($fa);
+	    print $script_file make_script( 'id'       => $s{'id'}, 
+					    'offset'   => $offset, 
+					    'size'     => $real_sts_size,
+					    'wordsize' => $wordsize,
+					    'iupac'    => 1,
+					    'quiet'    => 0
+					    );
+	    print $sts_file make_sts_line(%s);
+	    close_test();
+	    push @make_targets, $script_name;
+	    $test++;
+	}
+    }
+
+}
+
+#
+# Do threading tests.
+#
+if ($tests{'all'} || $tests{'threads'}) {
+
+
+#    size_t chunk_size = (size_t) POSIX::ceil((seq_len - (ePCR_threads+1)*m_overlap)/(double)ePCR_threads) + 2*m_overlap;
+
+    my $test_subdir = "$TESTCASE_DIR/threads";
+    -d $test_subdir or mkdir $test_subdir or die "error making $test_subdir: $!";
+
+    foreach my $threads (2,3,4) {
+
+	foreach my $wordsize (5,7,8,11) {
+
+            my %s = %sample_sts;
+	    # Make the primers quite short to shrink the number of
+	    # test cases we generate (see the next foreach)
+	    $s{'p1'} =~ substr($s{'p1'}, 0, 12);
+	    $s{'p2'} =~ substr($s{'p2'}, 0, 12);
+            my ($len1, $len2) = (length($s{'p1'}), length($s{'p2'}));
+	    # Use a short margin, again to reduce test cases.
+	    my $margin = 5;
+	    if ($wordsize == 7) {
+		# Just to get this in as a test case.
+		$margin = 0;
+	    }
+	    my $gap = int(rand($margin+1));
+	    my $real_sts_size = $s{'size'} = $len1 + $gap + $len2;
+	    if ($margin != 0) {
+		$s{'size'} = $len1 + $len2 + $gap + (int(rand(3))-1);
+	    } else {
+		$s{'size'} = $len1 + $len2 + $gap;
+	    }
+	    my $max_sts_size = $s{'size'};
+            my $fa = random_fa(100_000);
+
+	    if ($wordsize == 11) {
+		# Add the test case where there the largest sts is
+		# never found but a smaller one is.  Let's add a
+		# larger STS that will not be found but which will
+		# expand the thread overlap region.
+		$max_sts_size = $s{'size'} + 1;
+	    }
+
+	    my $m_overlap = $max_sts_size + $margin -1;
+	    my $chunk_size = ceil((length($fa) - ($threads+1)*$m_overlap)/$threads) + 2*$m_overlap;
+	    print STDERR "T=$threads, W=$wordsize, chunk-size = $chunk_size\n";
+
+
+	    # test all offsets in and around the thread overlap region
+	    foreach my $rel_offset (-($real_sts_size+4)..($m_overlap+$real_sts_size+6)) {
+
+		my $offset = ($threads-1)*($chunk_size - $m_overlap) + $rel_offset;
+
+		$s{'alias'} = "T=$threads,W=$wordsize,chunk-size=$chunk_size,Offset=" . ($threads-1)*($chunk_size-$m_overlap);
+
+		open_test($test_subdir);
+
+		my $fa_copy = $fa;
+
+		substr($fa_copy,$offset,length($s{'p1'})) = $s{'p1'};
+		substr($fa_copy,$offset+length($s{'p1'})+$gap,length($s{'p2'})) = revcmp($s{'p2'});
+
+		print $fasta_file ">test$test\n" . linefeedize($fa_copy);
+
+		print $script_file make_script( 'id'       => $s{'id'},
+						'offset'   => $offset,
+						'size'     => $real_sts_size,
+						'margin'   => $margin,
+						'wordsize' => $wordsize,
+						'iupac'    => 0,
+						'quiet'    => 0,
+						'threads'  => $threads
+						);
+		print $sts_file make_sts_line(%s);
+		if ($wordsize == 11) {
+		    # Add another STS.
+		    # See previous wordsize == 11 clause.
+		    # This STS will never be found.
+		    my %another_sts = %s;
+		    $another_sts{'id'} = "big_weirdo";
+		    $another_sts{'size'} = $max_sts_size;
+		    $another_sts{'p1'} = "ACGTACGTACGTACGTACGT";
+		    $another_sts{'p2'} = "TGATGATGATGATGATGA";
+		    print $sts_file make_sts_line(%another_sts);
+		}
+		close_test();
+		push @make_targets, $script_name;
+		$test++;
+	    }
+	}
+    }
+
+}
+
+
+#
+# Do some more random test cases involving threads.  This test
+# also tests hits in the reverse direction, just for the hell of it.
+#
+if ($tests{'all'} || $tests{'random_threads'}) {
+
+    my $test_subdir = "$TESTCASE_DIR/random_threads";
+    -d $test_subdir or mkdir $test_subdir or die "error making $test_subdir: $!";
+
+    for (my $i=0; $i<500; $i++) {
+	open_test($test_subdir);
+	my $threads = 100;
+	my %s = %sample_sts;
+	my $wordsize = ($test % 8)+5;
+	$s{'p1'} = rand_primer($wordsize);
+	$s{'p2'} = rand_primer($wordsize);
+	my ($len1, $len2) = (length($s{'p1'}), length($s{'p2'}));
+	my $fa = random_fa(100_000);
+	my $offset = int(rand(length($fa)-10000-($len1+$len2)));
+	my $max_gap = length($fa)/($threads+1);
+	my $gap = int(rand($max_gap));
+	my $real_sts_size = $len1 + $len2 + $gap;
+	$s{'size'} = abs($real_sts_size + int(rand(101))-50);
+	my $max_sts_size = $s{'size'};
+	my $margin = 50;
+	my $m_overlap = $max_sts_size + $margin -1;
+	# Adjust the number of threads in case it's too large
+	while (length($fa) - ($threads+1)*$m_overlap <= 0) {
+	    $threads--;
+	}
+	my $chunk_size = ceil((length($fa) - ($threads+1)*$m_overlap)/$threads) + 2*$m_overlap;
+	if ($test % 2) {
+	    substr($fa,$offset,length($s{'p2'})) = $s{'p2'};
+	    substr($fa,$offset+length($s{'p2'})+$gap,length($s{'p1'})) = revcmp($s{'p1'});
+	} else {
+	    substr($fa,$offset,length($s{'p1'})) = $s{'p1'};
+	    substr($fa,$offset+length($s{'p1'})+$gap,length($s{'p2'})) = revcmp($s{'p2'});
+	}
+	print $fasta_file ">test$test\n" . linefeedize($fa);
+	print $script_file make_script( 'id'       => $s{'id'},
+					'offset'   => $offset,
+					'size'     => $real_sts_size,
+					'wordsize' => $wordsize,
+					'iupac'    => int(rand(2)),
+					'threads'  => $threads,
+					'quiet'    => 0
+					);
+	print $sts_file make_sts_line(%s);
+	close_test();
+	push @make_targets, $script_name;
+	$test++;
+    }
+}
+
+# Create the makefile, which might look something like this:
+# test: testcases
+#
+# testcases: \
+# 	test_cases_voh_test0000 \
+# 	test_cases_voh_test0001
+# 	...
+#
+# test_cases_voh_test0000:
+# 	perl test_cases/voh/test0000.pl
+# 
+# test_cases_voh_test0001:
+# 	perl test_cases/voh/test0001.pl
+#
+# ...
+# EOT
+# This peculiar arrangement makes the makefile parallelizable, e.g. 'make -j 8'
+# will be able to run 8 tests simultaneously (on an 8-cpu computer).
+open (MAKE, ">$TEST_DIR/Makefile") or die "can't open $TEST_DIR/Makefile for writing";
+print MAKE "# Makefile for testing me-PCR, automatically generated by make_epcr_tests\n\n";
+print MAKE "test: testcases\n\n";
+print MAKE "testcases: \\\n";
+foreach my $i (0..$#make_targets) {
+  my $script = $make_targets[$i];
+  $script =~ s/\//_/g;  # replace slashes with underscores to generate a phony target name
+  print MAKE "\t$script"; 
+  print MAKE " \\" if $i < $#make_targets;
+  print MAKE "\n";
+}
+print MAKE "\n";
+foreach my $script (@make_targets) {
+  (my $phony = $script) =~ s/\//_/g;  # replace slashes with underscores to generate a phony target name
+  print MAKE "$phony:\n\tperl $script\n\n";
+}
+close MAKE;
+
+print STDERR <<"EOT";
+
+To run the tests, do:
+cd $TEST_DIR
+make test
+EOT
+
+exit 0;
+
+# args: a hash with keys id, p1, p2, size, and alias
+sub make_sts_line {
+    my %a = @_;
+    return join("\t", $a{'id'}, $a{'p1'}, $a{'p2'}, $a{'size'}, $a{'alias'}) . "\n";
+}
+
+# insert linefeeds every 50 characters (and put one at the end)
+sub linefeedize {
+    my $s = shift;
+    $s =~ s/(.{1,51})/$1\n/g;
+    return $s;
+}
+
+# Do a reverse complement, as for converting the complementary primer
+# for use on the same strand.
+sub revcmp {
+    my $primer = shift;
+    my $rev_primer = reverse $primer;
+    # IUPAC complementation mapping (after, e.g. NCBI)
+    $rev_primer =~ y/ACGTBDHKMNRSVWXY/TGCAVHDMKNYSBWXR/;
+    return $rev_primer;
+}
+
+# Mutate a base in a sequence at a specified offset.  The mutation is
+# not random; it is just guaranteed to cause the base to differ.
+# IN: sequence, offset to mutate
+sub mutate {
+  my ($primer, $offset) = @_;
+  $primer = uc($primer);
+  my @bases = qw(A C G T);
+  my $i = 0;
+  my %bases_hash = map {$_=>$i++} @bases;
+  my $base = substr($primer, $offset, 1);
+  my $base_idx = $bases_hash{$base};
+  substr($primer, $offset, 1) = $bases[($base_idx+1)%4];
+  return $primer;
+}
+
+# create the perl source code for running and verifying a test
+# args: pass in hash-style key-value pairs.  You MUST specify
+# id, offset, and size.  
+sub make_script {
+    my %args = (
+#	'id'         => 'xxx',
+#	'offset'     => 'xxx',
+#	'size'       => 'xxx',
+	'wordsize'   => 11,
+	'iupac'      => 0,
+	'margin'     => 50,
+	'mismatches' => 0,
+	'quiet'      => 1,
+	'hits'       => 1,
+	'threads'    => 1,
+	'prog'       => $epcr_prog,
+	@_
+	);
+    my ($id, $offset, $size, $epcr) = ($args{'id'}, $args{'offset'}, $args{'size'}, $args{'prog'}) or die "bad usage for make_script";
+    my $script = "print STDERR qq(Test case $test\\n);\n";
+    $offset++;
+    my $epcr_args = sprintf ("W=%d N=%d M=%d I=%s T=%d %s %s",
+			     $args{'wordsize'},
+			     $args{'mismatches'},
+			     $args{'margin'},
+			     $args{'iupac'},
+			     $args{'threads'},
+			     $args{'z'} ? "Z=$args{'z'}" : "",
+			     $args{'x'} ? "X=$args{'x'}" : "",
+			    );
+    $script .= "\$epcr_output = `$epcr $epcr_args $sts_name $fasta_name`;\n";
+    if ($args{'hits'} == 0) {
+	$script .= "exit (\$epcr_output eq '' ? 0 : 1)\n";
+    } else {
+	my $pattern = '/' . $offset . '\.\.(\d+)\s+' . $id . '/';
+	$script .= <<EOT;
+	if (\$epcr_output =~ $pattern) {
+	    if (\$1 - $offset + 1 == $size) {
+		exit 0;
+	    } else {
+		print "Error: match, but wrong right position;  e-PCR output is '\$epcr_output'\n";
+		exit 1;
+	    }
+	} else {
+	    print "Error: bad position, or no match; e-PCR output is '\$epcr_output'\n";
+	    exit 1;
+	}
+EOT
+    }
+    return $script;
+}
+
+# Generate a "random" fasta file
+sub random_fa {
+    # max_size is a lie: it will be (randomly) a little bigger
+    my $max_size = $_[0] || 1000;
+    my $length = int(rand(100))+$max_size;
+    my $fa = "A" x $length;
+    my $num_n = int(rand($length/3));
+    foreach (1..$num_n) {
+	my $offset = int(rand($length));
+	substr($fa,$offset,1) = 'N';
+    }
+    return $fa;
+}
+
+
+sub rand_primer {
+    my $min_primer_length = shift;
+    $min_primer_length = 10 if $min_primer_length < 10;
+    my $length = int(rand(120))+$min_primer_length;
+    my $bases = "ACGT";
+    my $primer = "";
+    for (my $i=0; $i < $length; $i++) {
+	$primer .= substr($bases,int(rand(4)),1);
+    }
+    return $primer;
+}
+
+# note well that the sts, fasta, and script names that are "returned" globally
+# (this code is really bad, btw) are for use in the make file and scripts, NOT
+# for writing to - hence the file handles that are also "returned".
+sub open_test {
+    my $dir = shift;
+    $sts_name = sprintf("$dir/test%04d.sts", $test);
+    $fasta_name = sprintf("$dir/test%04d.fa", $test);
+    $script_name = sprintf("$dir/test%04d.pl", $test);
+    open($sts_file,">$sts_name") or die "can't open '$sts_name' for writing: $!";
+    open($fasta_file,">$fasta_name") or die "can't open '$fasta_name' for writing: $!";
+    open($script_file,">$script_name") or die "can't open '$script_name' for writing: $!";
+    $sts_name =~ s,^[^/]+/,,;  # strip leading directory
+    $fasta_name =~ s,^[^/]+/,,;  # strip leading directory
+    $script_name =~ s,^[^/]+/,,;  # strip leading directory
+}
+
+sub close_test {
+    close $sts_file;
+    close $fasta_file;
+    close $script_file;
+}
+
+__END__ 
+
+
+=head1 NAME
+
+make_epcr_tests - make regression tests for the me-PCR program (UNIX only)
+
+=head1 SYNOPSIS
+
+make_epcr_tests [options] subtest [subtest] ...
+
+  Options:
+
+  --prog=program_path - specify the path to me-PCR to test to avoid prompting
+  --frontend=prog     - useful for running me-PCR via a debugger like valgrind
+
+  Subtests:
+
+    all     - Perform all tests.
+
+    offset  - Test an sts at different file offsets from the beginning
+              and end of the sequence and with different gaps between
+              primers.
+
+    voh     - Test variable offset hashing, the ability to process
+              primers with N's anywhere in them.
+
+    rvoh    - Test variable offset hashing in reverse.
+
+    multi   - Test multiple sequences in one FASTA file.
+
+    bogus   - Test simple cases which should result in no hits.
+
+    mismatches - Test the N and X options.  N is mismatches allowed, X
+              is the number of 3'-most bases which are not allowed to
+              have any mismatches at all (regardless of the N option).
+
+    z       - Test the Z (default pcr size for sts's with 0 size)
+              option by setting it to 500 and using a margin of 2.  We
+              will test against sts's of sizes 497 (should be no hit),
+              498, 499, 500, 501, 502, and 503 (should be no hit).
+
+    random1 - Do 200 random test cases.
+
+    random2 - Do 500 more random test cases.
+
+    iupac   - Test primers with IUPAC symbols in them using the new -I
+              switch.  VERSION COMPATIBILITY: CHOP ME-PCR 1.0 OR
+              GREATER.
+
+    threads - Extensive threading tests.
+              VERSION COMPATIBILITY: CHOP ME-PCR 1.0 OR GREATER.
+
+    random_threads - Extensive random threading tests.
+              VERSION COMPATIBILITY: CHOP ME-PCR 1.0 OR GREATER.
+
+make_epcr_tests --help: Show this help message.
+
+make_epcr_tests --man: Show the full manual page.
+
+make_epcr_tests --version: Show version and copyright information.  
+
+Report bugs and suggestions to Kevin Murphy E<lt>murphy@genome.chop.eduE<gt>.
+
+=head1 DESCRIPTION
+
+B<make_epcr_tests> creates regression tests for the me-PCR program.
+B<This is not necessary or recommended for regular users of me-PCR>.
+The tests consume quite a lot of disk space and take a long time to
+run.  
+
+B<make_epcr_tests> creates (or uses) a subdirectory called 'epcr_tests'.  To
+make and run all the tests, do the following:
+
+  make_epcr_tests all
+  cd epcr_tests
+  make test
+
+If you have multiple CPU's at your disposal and are using GNU make,
+using the -j switch can help you get through the tests faster.  E.g.:
+
+  make -j 8
+
+for an 8-way computer.
+
+=head1 SEE ALSO
+
+me-PCR
+
+=head1 BUGS
+
+Mismatch testing is not adequate.
+
+=head1 HISTORY
+
+$Log: make_epcr_tests,v $
+Revision 1.4  2004/04/12 19:36:10  murphy
+added --frontend switch to allow memory-checking during regression tests
+
+Revision 1.3  2004/04/12 19:28:30  murphy
+added 'multi' test to test multiple sequences in fasta files
+
+Revision 1.2  2004/04/06 03:04:23  murphy
+added mismatches subtest; changed makefile format to allow parallelizing with -j
+
+
+=head1 COPYRIGHT
+
+Copyright 2004 by Children's Hospital of Philadelphia
+
+=head1 AUTHOR
+
+Please report bugs or suggestions to Kevin Murphy E<lt>murphy@genome.chop.eduE<gt>.
+
+=cut
