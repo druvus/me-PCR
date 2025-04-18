@@ -1,0 +1,35 @@
+# Makefile for me-PCR using Borland BCC32
+# Note that Posix threads functionality is supplied via pthreads-win32
+# (http://sources.redhat.com/pthreads-win32/).  The pthreads files
+# are in the borland/ subdirectory; the DLL file needs to be copied
+# into the same directory as the executable in order to run the app.
+
+CPP = bcc32
+CFLAGS = -O2 -tWM -Iborland -Lborland
+
+all : me-PCR-BCC.exe
+
+clean: 
+	- del *.obj
+	- del me-PCR-BCC.exe
+
+me-PCR-BCC.exe : me-PCR.cpp stsmatch.obj fasta-io.obj util.obj
+        $(CPP) $(CFLAGS) -eme-PCR-BCC.exe me-PCR.cpp stsmatch.obj fasta-io.obj util.obj pthreadBC.lib
+
+stsmatch.obj : stsmatch.cpp stsmatch.h util.h
+	$(CPP) $(CFLAGS) -c stsmatch.cpp
+
+fasta-io.obj : fasta-io.cpp fasta-io.h util.h
+	$(CPP) $(CFLAGS) -c fasta-io.cpp
+
+util.obj : util.cpp util.h
+	$(CPP) $(CFLAGS) -c util.cpp
+
+makeseq: makeseq.c
+	$(CPP) $(CFLAGS) -o makeseq makeseq.c
+
+readseq: readseq.c
+	$(CPP) -Wall -g -o readseq readseq.c
+
+
+
